@@ -95,28 +95,7 @@ class Migration(migrations.Migration):
             field=models.ForeignKey(to=settings.AUTH_USER_MODEL),
             preserve_default=True,
         ),
-        migrations.AddField(
-            model_name='authorizedclient',
-            name='client',
-            field=models.ForeignKey(to='oauth2.Client'),
-            preserve_default=True,
-        ),
-        migrations.AddField(
-            model_name='authorizedclient',
-            name='scope',
-            field=models.ManyToManyField(to='oauth2.Scope'),
-            preserve_default=True,
-        ),
-        migrations.AddField(
-            model_name='authorizedclient',
-            name='user',
-            field=models.ForeignKey(related_name='oauth2_authorized_client', to=settings.AUTH_USER_MODEL),
-            preserve_default=True,
-        ),
-        migrations.AlterUniqueTogether(
-            name='authorizedclient',
-            unique_together=set([('user', 'client')]),
-        ),
+
         migrations.AddField(
             model_name='accesstoken',
             name='client',
