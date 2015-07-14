@@ -6,3 +6,9 @@ _build
 dist
 build
 venv
+
+.project
+
+.pydevproject
+
+.settings/org.eclipse.core.resources.prefs

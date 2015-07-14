@@ -26,17 +26,6 @@ class Migration(migrations.Migration):
             bases=(models.Model,),
         ),
         migrations.CreateModel(
-            name='AuthorizedClient',
-            fields=[
-                ('id', models.AutoField(verbose_name='ID', serialize=False, auto_created=True, primary_key=True)),
-                ('authorized_at', models.DateTimeField(auto_now_add=True)),
-            ],
-            options={
-                'db_table': 'oauth2_authorizedclient',
-            },
-            bases=(models.Model,),
-        ),
-        migrations.CreateModel(
             name='Client',
             fields=[
                 ('id', models.AutoField(verbose_name='ID', serialize=False, auto_created=True, primary_key=True)),

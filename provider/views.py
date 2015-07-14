@@ -3,10 +3,10 @@ import urlparse
 from django.http import HttpResponse
 from django.http import HttpResponseRedirect, QueryDict
 from django.utils.translation import ugettext as _
-from django.views.generic.base import TemplateView, View
+from django.views.generic.base import TemplateView
 from django.core.exceptions import ObjectDoesNotExist
-from oauth2.models import Client, Scope
-from provider import constants
+from oauth2.models import Client
+from . import constants, scope
 
 
 class OAuthError(Exception):
@@ -30,7 +30,21 @@ class OAuthError(Exception):
     """
 
 
-class AuthUtilMixin(object):
+class OAuthView(TemplateView):
+    """
+    Base class for any view dealing with the OAuth flow. This class overrides
+    the dispatch method of :attr:`TemplateView` to add no-caching headers to
+    every response as outlined in :rfc:`5.1`.
+    """
+
+    def dispatch(self, request, *args, **kwargs):
+        response = super(OAuthView, self).dispatch(request, *args, **kwargs)
+        response['Cache-Control'] = 'no-store'
+        response['Pragma'] = 'no-cache'
+        return response
+
+
+class Mixin(object):
     """
     Mixin providing common methods required in the OAuth view defined in
     :attr:`provider.views`.
@@ -73,7 +87,7 @@ class AuthUtilMixin(object):
         return None
 
 
-class CaptureViewBase(AuthUtilMixin, TemplateView):
+class Capture(OAuthView, Mixin):
     """
     As stated in section :rfc:`3.1.2.5` this view captures all the request
     parameters and redirects to another URL to avoid any leakage of request
@@ -99,9 +113,6 @@ class CaptureViewBase(AuthUtilMixin, TemplateView):
         """
         raise NotImplementedError
 
-    def validate_scopes(self, scope_list):
-        raise NotImplementedError
-
     def handle(self, request, data):
         self.cache_data(request, data)
 
@@ -111,12 +122,7 @@ class CaptureViewBase(AuthUtilMixin, TemplateView):
                 'next': None},
                 status=400)
 
-        scope_list = [s for s in
-                      data.get('scope', '').split(' ') if s != '']
-        if self.validate_scopes(scope_list):
-            return HttpResponseRedirect(self.get_redirect_url(request))
-        else:
-            return HttpResponse("Invalid scope.", status=400)
+        return HttpResponseRedirect(self.get_redirect_url(request))
 
     def get(self, request):
         return self.handle(request, request.GET)
@@ -125,7 +131,7 @@ class CaptureViewBase(AuthUtilMixin, TemplateView):
         return self.handle(request, request.POST)
 
 
-class AuthorizeViewBase(AuthUtilMixin, TemplateView):
+class Authorize(OAuthView, Mixin):
     """
     View to handle the client authorization as outlined in :rfc:`4`.
     Implementation must override a set of methods:
@@ -193,18 +199,6 @@ class AuthorizeViewBase(AuthUtilMixin, TemplateView):
         """
         raise NotImplementedError
 
-    def has_authorization(self, request, client, scope_list):
-        """
-        Check to see if there is a previous authorization request with the
-        requested scope permissions.
-
-        :param request:
-        :param client:
-        :param scope_list:
-        :return: ``False``, ``AuthorizedClient``
-        """
-        return False
-
     def _validate_client(self, request, data):
         """
         :return: ``tuple`` - ``(client or False, data or error)``
@@ -243,7 +237,7 @@ class AuthorizeViewBase(AuthUtilMixin, TemplateView):
         # cached data and tell the resource owner. We will *not* redirect back
         # to the URL.
 
-        if error.get('error') in ['redirect_uri', 'unauthorized_client']:
+        if error['error'] in ['redirect_uri', 'unauthorized_client']:
             ctx.update(next='/')
             return self.render_to_response(ctx, **kwargs)
 
@@ -261,36 +255,26 @@ class AuthorizeViewBase(AuthUtilMixin, TemplateView):
 
         try:
             client, data = self._validate_client(request, data)
-        except OAuthError as e:
+        except OAuthError, e:
             return self.error_response(request, e.args[0], status=400)
 
-        scope_list = [s.name for s in
-                      data.get('scope', [])]
-        if self.has_authorization(request, client, scope_list):
-            post_data = {
-                'scope': scope_list,
-                'authorize': u'Authorize',
-            }
-
         authorization_form = self.get_authorization_form(request, client,
-                                                         post_data, data)
+            post_data, data)
 
         if not authorization_form.is_bound or not authorization_form.is_valid():
             return self.render_to_response({
                 'client': client,
                 'form': authorization_form,
-                'oauth_data': data,
-            })
+                'oauth_data': data, })
 
         code = self.save_authorization(request, client,
-                                       authorization_form, data)
+            authorization_form, data)
 
         # be sure to serialize any objects that aren't natively json
         # serializable because these values are stored as session data
-        data['scope'] = scope_list
         self.cache_data(request, data)
         self.cache_data(request, code, "code")
-        self.cache_data(request, client.pk, "client_pk")
+        self.cache_data(request, client.serialize(), "client")
 
         return HttpResponseRedirect(self.get_redirect_url(request))
 
@@ -301,7 +285,7 @@ class AuthorizeViewBase(AuthUtilMixin, TemplateView):
         return self.handle(request, request.POST)
 
 
-class RedirectViewBase(AuthUtilMixin, View):
+class Redirect(OAuthView, Mixin):
     """
     Redirect the user back to the client with the right query parameters set.
     This can be either parameters indicating success or parameters indicating
@@ -314,16 +298,17 @@ class RedirectViewBase(AuthUtilMixin, View):
         Return an error response to the client with default status code of
         *400* stating the error as outlined in :rfc:`5.2`.
         """
-        return HttpResponse(json.dumps(error), content_type=mimetype,
+        return HttpResponse(json.dumps(error), mimetype=mimetype,
                 status=status, **kwargs)
 
     def get(self, request):
         data = self.get_data(request)
         code = self.get_data(request, "code")
         error = self.get_data(request, "error")
-        client_pk = self.get_data(request, "client_pk")
+        client = self.get_data(request, "client")
 
-        client = Client.objects.get(pk=client_pk)
+        # client must be properly deserialized to become a valid instance
+        client = Client.deserialize(client)
 
         # this is an edge case that is caused by making a request with no data
         # it should only happen if this view is called manually, out of the
@@ -358,7 +343,7 @@ class RedirectViewBase(AuthUtilMixin, View):
         return HttpResponseRedirect(redirect_uri)
 
 
-class AccessTokenViewBase(AuthUtilMixin, TemplateView):
+class AccessToken(OAuthView, Mixin):
     """
     :attr:`AccessToken` handles creation and refreshing of access tokens.
 
@@ -478,7 +463,7 @@ class AccessTokenViewBase(AuthUtilMixin, TemplateView):
         Return an error response to the client with default status code of
         *400* stating the error as outlined in :rfc:`5.2`.
         """
-        return HttpResponse(json.dumps(error), content_type=mimetype,
+        return HttpResponse(json.dumps(error), mimetype=mimetype,
                 status=status, **kwargs)
 
     def access_token_response(self, access_token):
@@ -491,7 +476,7 @@ class AccessTokenViewBase(AuthUtilMixin, TemplateView):
             'access_token': access_token.token,
             'token_type': constants.TOKEN_TYPE,
             'expires_in': access_token.get_expire_delta(),
-            'scope': access_token.get_scope_string(),
+            'scope': ' '.join(scope.names(access_token.scope)),
         }
 
         # Not all access_tokens are given a refresh_token
@@ -503,7 +488,7 @@ class AccessTokenViewBase(AuthUtilMixin, TemplateView):
             pass
 
         return HttpResponse(
-            json.dumps(response_data), content_type='application/json'
+            json.dumps(response_data), mimetype='application/json'
         )
 
     def authorization_code(self, request, data, client):
@@ -513,10 +498,12 @@ class AccessTokenViewBase(AuthUtilMixin, TemplateView):
         """
         grant = self.get_authorization_code_grant(request, request.POST,
                 client)
-        at = self.create_access_token(request, grant.user,
-                                      list(grant.scope.all()), client)
-        rt = self.create_refresh_token(request, grant.user,
-                                       list(grant.scope.all()), at, client)
+        if constants.SINGLE_ACCESS_TOKEN:
+            at = self.get_access_token(request, grant.user, grant.scope, client)
+        else:
+            at = self.create_access_token(request, grant.user, grant.scope, client)
+            rt = self.create_refresh_token(request, grant.user, grant.scope, at,
+                    client)
 
         self.invalidate_grant(grant)
 
@@ -528,17 +515,13 @@ class AccessTokenViewBase(AuthUtilMixin, TemplateView):
         """
         rt = self.get_refresh_token_grant(request, data, client)
 
-        token_scope = list(rt.access_token.scope.all())
-
         # this must be called first in case we need to purge expired tokens
         self.invalidate_refresh_token(rt)
         self.invalidate_access_token(rt.access_token)
 
-        at = self.create_access_token(request, rt.user,
-                                      token_scope,
-                                      client)
-        rt = self.create_refresh_token(request, at.user,
-                                       at.scope.all(), at, client)
+        at = self.create_access_token(request, rt.user, rt.access_token.scope,
+                client)
+        rt = self.create_refresh_token(request, at.user, at.scope, at, client)
 
         return self.access_token_response(at)
 
@@ -551,10 +534,13 @@ class AccessTokenViewBase(AuthUtilMixin, TemplateView):
         user = data.get('user')
         scope = data.get('scope')
 
-        at = self.create_access_token(request, user, scope, client)
-        # Public clients don't get refresh tokens
-        if client.client_type != 1:
-            rt = self.create_refresh_token(request, user, scope, at, client)
+        if constants.SINGLE_ACCESS_TOKEN:
+            at = self.get_access_token(request, user, scope, client)
+        else:
+            at = self.create_access_token(request, user, scope, client)
+            # Public clients don't get refresh tokens
+            if client.client_type != 1:
+                rt = self.create_refresh_token(request, user, scope, at, client)
 
         return self.access_token_response(at)
 

@@ -1,21 +1,20 @@
 import json
 import urlparse
 import datetime
-from unittest import SkipTest
 from django.http import QueryDict
 from django.conf import settings
 from django.core.urlresolvers import reverse
 from django.utils.html import escape
 from django.test import TestCase
 from django.contrib.auth.models import User
-from provider import constants, scope
-from provider.compat import skipIfCustomUser
-from provider.templatetags.scope import scopes
-from provider.utils import now as date_now
-from provider.oauth2.forms import ClientForm
-from provider.oauth2.models import Client, Grant, AccessToken, RefreshToken
-from provider.oauth2.backends import BasicClientBackend, RequestParamsClientBackend
-from provider.oauth2.backends import AccessTokenBackend
+from .. import constants, scope
+from ..compat import skipIfCustomUser
+from ..templatetags.scope import scopes
+from ..utils import now as date_now
+from .forms import ClientForm
+from .models import Client, Grant, AccessToken, RefreshToken
+from .backends import BasicClientBackend, RequestParamsClientBackend
+from .backends import AccessTokenBackend
 
 
 @skipIfCustomUser
@@ -54,7 +53,7 @@ class BaseOAuth2TestCase(TestCase):
         response = self.client.get(url_func())
         response = self.client.get(self.auth_url2())
 
-        response = self.client.post(self.auth_url2(), {'authorize': True, 'scope': 'read'})
+        response = self.client.post(self.auth_url2(), {'authorize': True, 'scope': constants.SCOPES[0][1]})
         self.assertEqual(302, response.status_code, response.content)
         self.assertTrue(self.redirect_url() in response['Location'])
 
@@ -146,9 +145,10 @@ class AuthorizationTest(BaseOAuth2TestCase):
         self.login()
 
         response = self.client.get(self.auth_url() + '?client_id=%s&response_type=code&scope=invalid+invalid2' % self.get_client().client_id)
+        response = self.client.get(self.auth_url2())
 
         self.assertEqual(400, response.status_code)
-        self.assertTrue(escape(u"Invalid scope.") in response.content)
+        self.assertTrue(escape(u"'invalid' is not a valid scope.") in response.content)
 
         response = self.client.get(self.auth_url() + '?client_id=%s&response_type=code&scope=%s' % (
             self.get_client().client_id,
@@ -195,11 +195,10 @@ class AuthorizationTest(BaseOAuth2TestCase):
         self.assertTrue('code' in response['Location'])
         self.assertTrue('state=abc' in response['Location'])
 
-    # # FIXME: Not sure what the error condition is that should exist here.
-    # def test_redirect_requires_valid_data(self):
-    #     self.login()
-    #     response = self.client.get(self.redirect_url())
-    #     self.assertEqual(400, response.status_code)
+    def test_redirect_requires_valid_data(self):
+        self.login()
+        response = self.client.get(self.redirect_url())
+        self.assertEqual(400, response.status_code)
 
 
 class AccessTokenTest(BaseOAuth2TestCase):
@@ -237,7 +236,7 @@ class AccessTokenTest(BaseOAuth2TestCase):
             'code': '123'})
 
         self.assertEqual(400, response.status_code, response.content)
-        # self.assertEqual('invalid_grant', json.loads(response.content)['error'])
+        self.assertEqual('invalid_grant', json.loads(response.content)['error'])
 
     def _login_authorize_get_token(self):
         required_props = ['access_token', 'token_type']
@@ -287,6 +286,33 @@ class AccessTokenTest(BaseOAuth2TestCase):
         self.assertEqual('unsupported_grant_type', json.loads(response.content)['error'],
             response.content)
 
+    def test_fetching_single_access_token(self):
+        constants.SINGLE_ACCESS_TOKEN = True
+
+        result1 = self._login_authorize_get_token()
+        result2 = self._login_authorize_get_token()
+
+        self.assertEqual(result1['access_token'], result2['access_token'])
+
+        constants.SINGLE_ACCESS_TOKEN = False
+
+    def test_fetching_single_access_token_after_refresh(self):
+        constants.SINGLE_ACCESS_TOKEN = True
+
+        token = self._login_authorize_get_token()
+
+        self.client.post(self.access_token_url(), {
+            'grant_type': 'refresh_token',
+            'refresh_token': token['refresh_token'],
+            'client_id': self.get_client().client_id,
+            'client_secret': self.get_client().client_secret,
+        })
+
+        new_token = self._login_authorize_get_token()
+        self.assertNotEqual(token['access_token'], new_token['access_token'])
+
+        constants.SINGLE_ACCESS_TOKEN = False
+
     def test_fetching_access_token_multiple_times(self):
         self._login_authorize_get_token()
         code = self.get_grant().code
@@ -298,7 +324,7 @@ class AccessTokenTest(BaseOAuth2TestCase):
             'code': code})
 
         self.assertEqual(400, response.status_code)
-        # self.assertEqual('invalid_grant', json.loads(response.content)['error'])
+        self.assertEqual('invalid_grant', json.loads(response.content)['error'])
 
     def test_escalating_the_scope(self):
         self.login()
@@ -313,7 +339,7 @@ class AccessTokenTest(BaseOAuth2TestCase):
             'scope': 'read write'})
 
         self.assertEqual(400, response.status_code)
-        self.assertEqual('invalid_grant', json.loads(response.content)['error'])
+        self.assertEqual('invalid_scope', json.loads(response.content)['error'])
 
     def test_refreshing_an_access_token(self):
         token = self._login_authorize_get_token()

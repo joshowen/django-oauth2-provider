@@ -4,12 +4,12 @@
     {% if not error %}
         <p>{{ client.name }} would like to access your data with the following permissions:</p>
         <ul>
-            {% for permission in oauth_data.scope %}
+            {% for permission in oauth_data.scope|scopes %}
                 <li>
-                    {% if permission.description %}
-                        {{ permission.description }}
+                    {% if permission == "read" %}
+                    Read your data
                     {% else %}
-                        {{ permission.name }}
+                    Write your data
                     {% endif %}
                 </li>
             {% endfor %}
@@ -21,14 +21,8 @@
             <fieldset>
                 <div style="display: none;" />
                     <select type="select" name="scope" multiple="multiple">
-                    {% for scope in oauth_data.scope %}
-                        <option value="{{ scope.name }}" selected="selected">
-                            {% if scope.description %}
-                                {{ scope.description }}
-                            {% else %}
-                                {{ scope.name }}
-                            {% endif %}
-                        </option>
+                    {% for scope in oauth_data.scope|scopes %}
+                        <option value="{{ scope }}" selected="selected">{{ scope }}</option>
                     {% endfor %}
                     </select>
                 </div>

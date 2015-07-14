@@ -6,12 +6,18 @@ views in :attr:`provider.views`.
 
 from django.db import models
 from django.conf import settings
-from provider import constants
-from provider.constants import CLIENT_TYPES
-from provider.utils import now, short_token, long_token, get_code_expiry
-from provider.utils import get_token_expiry
+from .. import constants
+from ..constants import CLIENT_TYPES
+from ..utils import now, short_token, long_token, get_code_expiry
+from ..utils import get_token_expiry, serialize_instance, deserialize_instance
+from .managers import AccessTokenManager
 
-from django.utils import timezone
+try:
+    from django.utils import timezone
+except ImportError:
+    timezone = None
+
+AUTH_USER_MODEL = getattr(settings, 'AUTH_USER_MODEL', 'auth.User')
 
 
 class Client(models.Model):
@@ -30,7 +36,7 @@ class Client(models.Model):
 
     Clients are outlined in the :rfc:`2` and its subsections.
     """
-    user = models.ForeignKey(settings.AUTH_USER_MODEL, related_name='oauth2_client',
+    user = models.ForeignKey(AUTH_USER_MODEL, related_name='oauth2_client',
         blank=True, null=True)
     name = models.CharField(max_length=255, blank=True)
     url = models.URLField(help_text="Your application's URL.")
@@ -38,7 +44,6 @@ class Client(models.Model):
     client_id = models.CharField(max_length=255, default=short_token)
     client_secret = models.CharField(max_length=255, default=long_token)
     client_type = models.IntegerField(choices=CLIENT_TYPES)
-    auto_authorize = models.BooleanField(default=False, blank=True)
 
     def __unicode__(self):
         return self.redirect_uri
@@ -47,61 +52,34 @@ class Client(models.Model):
         public = (self.client_type == 1)
         return get_token_expiry(public)
 
-    class Meta:
-        app_label = 'oauth2'
-        db_table = 'oauth2_client'
+    def serialize(self):
+        return dict(user=serialize_instance(self.user),
+                    name=self.name,
+                    url=self.url,
+                    redirect_uri=self.redirect_uri,
+                    client_id=self.client_id,
+                    client_secret=self.client_secret,
+                    client_type=self.client_type)
 
-
-class Scope(models.Model):
-    name = models.CharField(max_length=15, primary_key=True)
-    description = models.CharField(max_length=256, default='', blank=True)
-
-    def __unicode__(self):
-        return self.name
-
-    class Meta:
-        app_label = 'oauth2'
-        db_table = 'oauth2_scope'
-
-
-class AuthorizedClientManager(models.Manager):
-    def get_authorization(self, user, client):
-        return self.get(user=user, client=client)
-
-    def check_authorization_scope(self, user, client, scope_list):
-        try:
-            authorization = self.get_authorization(user, client)
-        except AuthorizedClient.DoesNotExist:
+    @classmethod
+    def deserialize(cls, data):
+        if not data:
             return None
-        authorized_scopes = {s.name for s in authorization.scope.all()}
-        if set(scope_list) <= authorized_scopes:
-            return authorization
-        return None
 
-    def set_authorization_scope(self, user, client, scope_list):
-        try:
-            authorization = self.get_authorization(user, client)
-        except AuthorizedClient.DoesNotExist:
-            authorization = self.create(user=user, client=client)
-            authorization.save()
-        for s in scope_list:
-            authorization.scope.add(s)
-        return authorization
+        kwargs = {}
 
+        # extract values that we care about
+        for field in cls._meta.fields:
+            name = field.name
+            val = data.get(field.name, None)
 
-class AuthorizedClient(models.Model):
-    user = models.ForeignKey(settings.AUTH_USER_MODEL,
-                             related_name='oauth2_authorized_client')
-    client = models.ForeignKey(Client)
-    scope = models.ManyToManyField(Scope)
-    authorized_at = models.DateTimeField(auto_now_add=True, blank=True)
+            # handle relations
+            if val and field.rel:
+                val = deserialize_instance(field.rel.to, val)
 
-    objects = AuthorizedClientManager()
+            kwargs[name] = val
 
-    class Meta:
-        app_label = 'oauth2'
-        db_table = 'oauth2_authorizedclient'
-        unique_together = ['user', 'client']
+        return cls(**kwargs)
 
 
 class Grant(models.Model):
@@ -120,41 +98,15 @@ class Grant(models.Model):
     * :attr:`redirect_uri`
     * :attr:`scope`
     """
-    user = models.ForeignKey(settings.AUTH_USER_MODEL)
+    user = models.ForeignKey(AUTH_USER_MODEL)
     client = models.ForeignKey(Client)
     code = models.CharField(max_length=255, default=long_token)
     expires = models.DateTimeField(default=get_code_expiry)
     redirect_uri = models.CharField(max_length=255, blank=True)
-    scope = models.ManyToManyField(Scope)
+    scope = models.IntegerField(default=0)
 
     def __unicode__(self):
         return self.code
-
-    class Meta:
-        app_label = 'oauth2'
-        db_table = 'oauth2_grant'
-
-
-class AccessTokenManager(models.Manager):
-    def get_token(self, token):
-        return self.get(token=token, expires__gt=now())
-
-    def get_scoped_token(self, user, client, scope):
-        obj = self.get(user=user, client=client, expires__gt=now())
-        obj_scopes = {s.name for s in obj.scope.all()}
-        req_scopes = {s.name for s in scope}
-        if set(req_scopes).issubset(obj_scopes):
-            return obj
-        raise AccessToken.DoesNotExist
-
-    def create(self, scope=None, *args, **kwargs):
-        obj = super(AccessTokenManager, self).create(*args, **kwargs)
-        obj.save()
-        if not scope:
-            scope = list()
-        for s in scope:
-            obj.scope.add(s)
-        return obj
 
 
 class AccessToken(models.Model):
@@ -177,11 +129,12 @@ class AccessToken(models.Model):
     * :meth:`get_expire_delta` - returns an integer representing seconds to
         expiry
     """
-    user = models.ForeignKey(settings.AUTH_USER_MODEL)
+    user = models.ForeignKey(AUTH_USER_MODEL)
     token = models.CharField(max_length=255, default=long_token, db_index=True)
     client = models.ForeignKey(Client)
     expires = models.DateTimeField()
-    scope = models.ManyToManyField(Scope)
+    scope = models.IntegerField(default=constants.SCOPES[0][0],
+            choices=constants.SCOPES)
 
     objects = AccessTokenManager()
 
@@ -212,26 +165,6 @@ class AccessToken(models.Model):
         timedelta = expiration - reference
         return timedelta.days*86400 + timedelta.seconds
 
-    def get_scope_string(self):
-        names = [s.name for s in self.scope.all()]
-        names.sort()
-        return ' '.join(names)
-
-    class Meta:
-        app_label = 'oauth2'
-        db_table = 'oauth2_accesstoken'
-
-
-class RefreshTokenManager(models.Manager):
-    def create(self, scope=None, *args, **kwargs):
-        obj = super(RefreshTokenManager, self).create(*args, **kwargs)
-        obj.save()
-        if not scope:
-            scope = list()
-        for s in scope:
-            obj.scope.add(s)
-        return obj
-
 
 class RefreshToken(models.Model):
     """
@@ -246,18 +179,12 @@ class RefreshToken(models.Model):
     * :attr:`client` - :class:`Client`
     * :attr:`expired` - ``boolean``
     """
-    user = models.ForeignKey(settings.AUTH_USER_MODEL)
+    user = models.ForeignKey(AUTH_USER_MODEL)
     token = models.CharField(max_length=255, default=long_token)
     access_token = models.OneToOneField(AccessToken,
             related_name='refresh_token')
     client = models.ForeignKey(Client)
     expired = models.BooleanField(default=False)
 
-    objects = RefreshTokenManager()
-
     def __unicode__(self):
         return self.token
-
-    class Meta:
-        app_label = 'oauth2'
-        db_table = 'oauth2_refreshtoken'
