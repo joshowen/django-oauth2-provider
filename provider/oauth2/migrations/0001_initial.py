@@ -19,7 +19,7 @@ class Migration(migrations.Migration):
                 ('id', models.AutoField(verbose_name='ID', serialize=False, auto_created=True, primary_key=True)),
                 ('token', models.CharField(default=provider.utils.long_token, max_length=255, db_index=True)),
                 ('expires', models.DateTimeField()),
-                ('scope', models.IntegerField(default=2)),
+                # ('scope', models.IntegerField(default=2)),
             ],
             options={
                 'db_table': 'oauth2_accesstoken',
