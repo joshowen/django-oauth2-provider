@@ -52,7 +52,7 @@ class Migration(migrations.Migration):
                 ('expires', models.DateTimeField(default=provider.utils.get_code_expiry)),
                 ('redirect_uri', models.CharField(max_length=255, blank=True)),
                 ('client', models.ForeignKey(to='oauth2.Client')),
-                ('scope', models.IntegerField(default=2)),
+                # ('scope', models.IntegerField(default=2)),
             ],
             options={
                 'db_table': 'oauth2_grant',
