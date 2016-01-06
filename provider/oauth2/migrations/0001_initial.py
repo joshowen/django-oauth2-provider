@@ -19,7 +19,7 @@ class Migration(migrations.Migration):
                 ('id', models.AutoField(verbose_name='ID', serialize=False, auto_created=True, primary_key=True)),
                 ('token', models.CharField(default=provider.utils.long_token, max_length=255, db_index=True)),
                 ('expires', models.DateTimeField()),
-                ('scope', models.IntegerField(default=2)),
+                # ('scope', models.IntegerField(default=2)),
             ],
             options={
                 'db_table': 'oauth2_accesstoken',
@@ -52,7 +52,7 @@ class Migration(migrations.Migration):
                 ('expires', models.DateTimeField(default=provider.utils.get_code_expiry)),
                 ('redirect_uri', models.CharField(max_length=255, blank=True)),
                 ('client', models.ForeignKey(to='oauth2.Client')),
-                ('scope', models.IntegerField(default=2)),
+                # ('scope', models.IntegerField(default=2)),
             ],
             options={
                 'db_table': 'oauth2_grant',
@@ -85,7 +85,7 @@ class Migration(migrations.Migration):
             },
             bases=(models.Model,),
         ),
-        migrations.AlterField(
+        migrations.AddField(
             model_name='grant',
             name='scope',
             field=models.ManyToManyField(to='oauth2.Scope'),
@@ -103,7 +103,7 @@ class Migration(migrations.Migration):
             field=models.ForeignKey(to='oauth2.Client'),
             preserve_default=True,
         ),
-        migrations.AlterField(
+        migrations.AddField(
             model_name='accesstoken',
             name='scope',
             field=models.ManyToManyField(to='oauth2.Scope'),
